@@ -1,0 +1,83 @@
+# Production compose for OpenShip (openwearables.shipstuff.top).
+# Secrets (DB password, SECRET_KEY, admin seed, etc.) are set in OpenShip's
+# per-service environment, never in this file. No host port mappings:
+# OpenShip routes the portal (frontend:3000) and API (app:8000) by domain.
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: open-wearables
+      POSTGRES_USER: open-wearables
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U open-wearables -d open-wearables"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ow_postgres_data:/var/lib/postgresql
+    restart: unless-stopped
+
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - ow_redis_data:/data
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: open-wearables-platform:latest
+    command: scripts/start/app.sh
+    environment:
+      ENVIRONMENT: production
+      DB_HOST: db
+      REDIS_HOST: redis
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: on-failure
+
+  celery-worker:
+    image: open-wearables-platform:latest
+    command: scripts/start/worker.sh
+    environment:
+      ENVIRONMENT: production
+      DB_HOST: db
+      REDIS_HOST: redis
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+    depends_on: [db, redis, app]
+    restart: unless-stopped
+
+  celery-beat:
+    image: open-wearables-platform:latest
+    command: scripts/start/beat.sh
+    environment:
+      ENVIRONMENT: production
+      DB_HOST: db
+      REDIS_HOST: redis
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+    depends_on: [db, redis, app]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: open-wearables-frontend:prod
+    environment:
+      API_URL: http://app:8000
+    expose:
+      - "3000"
+    depends_on: [app]
+    restart: on-failure
+
+volumes:
+  ow_postgres_data:
+  ow_redis_data:
