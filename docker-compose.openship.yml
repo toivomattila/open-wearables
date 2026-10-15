@@ -45,6 +45,9 @@ services:
     restart: on-failure
 
   celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: open-wearables-platform:latest
     command: scripts/start/worker.sh
     environment:
@@ -56,6 +59,9 @@ services:
     restart: unless-stopped
 
   celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: open-wearables-platform:latest
     command: scripts/start/beat.sh
     environment:
