@@ -4,11 +4,11 @@ set -e -x
 scripts/start/install_extensions.sh
 
 echo "Starting I/O worker..."
-uv run celery -A app.main:celery_app worker --loglevel=info --pool=threads -Q default,sdk_sync,garmin_sync,webhook_sync -n io@%h &
+uv run celery -A app.main:celery_app worker --loglevel=info --pool=threads --without-gossip --without-mingle -Q default,sdk_sync,garmin_sync,webhook_sync -n io@%h &
 io_pid=$!
 
 echo "Starting CPU worker..."
-uv run celery -A app.main:celery_app worker --loglevel=info --pool=prefork --concurrency=2 -Q xml_sync -n cpu@%h &
+uv run celery -A app.main:celery_app worker --loglevel=info --pool=prefork --concurrency=2 --without-gossip --without-mingle -Q xml_sync -n cpu@%h &
 cpu_pid=$!
 
 # This shell is PID 1 in the container, so a SIGTERM from `docker stop` only reaches
@@ -47,10 +47,29 @@ wait_for_exit() {
     return "$result"
 }
 
-# The container lives as long as the CPU worker, as before.
-wait_for_exit "$cpu_pid"
-status=$?
+# Keep the container alive only while both workers are alive. An interrupted wait
+# has no exited PID; the signal trap records it and the loop retries.
+while :; do
+    exited_pid=""
+    wait -n -p exited_pid "$io_pid" "$cpu_pid"
+    status=$?
+    [ -n "$exited_pid" ] && break
+done
+shutdown_was_signalled=$signalled
 
-kill -TERM "$io_pid" 2>/dev/null
-wait_for_exit "$io_pid"
-exit "$status"
+# Stop the peer worker and reap it before exiting so Docker can restart the
+# container cleanly when either worker dies.
+kill -TERM "$io_pid" "$cpu_pid" 2>/dev/null || true
+if [ "$exited_pid" = "$io_pid" ]; then
+    wait_for_exit "$cpu_pid"
+else
+    wait_for_exit "$io_pid"
+fi
+
+if [ "$shutdown_was_signalled" = 1 ]; then
+    exit 0
+elif [ "$status" -ne 0 ]; then
+    exit "$status"
+else
+    exit 1
+fi
